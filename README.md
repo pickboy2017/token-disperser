@@ -34,11 +34,16 @@ nano address.txt
 - After entering all addresses, save the file using `Ctrl + X` and the press `Y` and then press `Enter`
 
 ## 🚀 Running the Script
+
+
+https://github.com/user-attachments/assets/5f804a6c-a5ae-40f5-8edf-eb99c5c75321
+
+
 - To start sending tokens, use the below command
 ```bash
 node bot.js
 ```
-
+- After running at the last stage it will ask `⛽ Use custom gas settings? (y/N)` ; if u want to use current gas fee then write `N` but if u want to use customized gas fee instead of current gas fee then u should write `y`
 ## ⚠️ Important Notes
 - You need to enter the **private key** of the wallet from which you want to send tokens to other wallets.
 - Choose the **Native Coin** option if you want to send gas tokens like **BNB, ETH, or IP**. If you want to send an **ERC-20 token**, you need to enter the **contract address** of that token.
