@@ -1,0 +1,1 @@
+// Add reciever wallet addresses one by one (1 address in each line)
