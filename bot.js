@@ -90,13 +90,26 @@ async function transferFunds(wallet, provider, addresses, chain) {
     return;
   }
 
-  const parsedAmount = balance / BigInt(addresses.length);
-  if (parsedAmount === 0n) {
-    ora().warn(`${colors.yellow}⚠️ Balance too low to distribute among ${addresses.length} addresses${colors.reset}`);
+  // Estimate gas cost for one transaction
+  const gasPrice = await provider.getGasPrice();
+  const gasLimit = 21000n; // Default gas limit for native transfers
+  const gasCost = gasPrice * gasLimit;
+
+  // Calculate the total gas cost for all transactions
+  const totalGasCost = gasCost * BigInt(addresses.length);
+
+  // Check if the balance is sufficient to cover gas costs
+  if (balance <= totalGasCost) {
+    ora().warn(`${colors.yellow}⚠️ Insufficient balance to cover gas fees. Needed: ${ethers.formatEther(totalGasCost)} ${chain.symbol}${colors.reset}`);
     return;
   }
 
-  const gasParams = { gasLimit: 21000 }; // Default gas limit for native transfers
+  // Calculate the amount to send after deducting gas fees
+  const amountToSend = (balance - totalGasCost) / BigInt(addresses.length);
+  if (amountToSend === 0n) {
+    ora().warn(`${colors.yellow}⚠️ Balance too low to distribute among ${addresses.length} addresses after gas fees${colors.reset}`);
+    return;
+  }
 
   // Fetch the current nonce
   const currentNonce = await provider.getTransactionCount(wallet.address, "latest");
@@ -105,9 +118,10 @@ async function transferFunds(wallet, provider, addresses, chain) {
   // Pre-calculate all transaction data
   const transactions = addresses.map((address, index) => ({
     to: address,
-    value: parsedAmount,
+    value: amountToSend,
     nonce: BigInt(currentNonce) + BigInt(index), // Explicitly convert to BigInt
-    ...gasParams
+    gasLimit: gasLimit,
+    gasPrice: gasPrice
   }));
 
   // Send all transactions in parallel
@@ -156,12 +170,13 @@ async function transferFunds(wallet, provider, addresses, chain) {
     }
   }
 
-  const totalSent = parsedAmount * BigInt(addresses.length);
+  const totalSent = amountToSend * BigInt(addresses.length);
   ora().succeed(`${colors.green}
 ✨ All transactions completed!
    🌐 Network: ${chain.name} (ID ${chain.chainId})
    👛 Sender Wallet: ${wallet.address}
-   💸 Total Sent: ${ethers.formatEther(totalSent)} ${chain.symbol}${colors.reset}`);
+   💸 Total Sent: ${ethers.formatEther(totalSent)} ${chain.symbol}
+   ⛽ Total Gas Fees: ${ethers.formatEther(totalGasCost)} ${chain.symbol}${colors.reset}`);
 }
 
 async function main() {
