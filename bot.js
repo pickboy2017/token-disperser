@@ -1,12 +1,8 @@
 const { ethers } = require("ethers");
 const fs = require("fs");
-const { default: ora } = require("ora");
-const dotenv = require("dotenv");
+const ora = require("ora");
 const chains = require("./chains.json");
-const config = require("./config.json");
-
-// Load environment variables
-dotenv.config();
+require('dotenv').config(); // Load environment variables from .env file
 
 const colors = {
   reset: "\x1b[0m",
@@ -16,9 +12,6 @@ const colors = {
   cyan: "\x1b[36m",
   magenta: "\x1b[35m"
 };
-
-// Rate limiting function
-const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function createValidProvider(url, chain) {
   const provider = new ethers.JsonRpcProvider(url);
@@ -79,143 +72,59 @@ async function buildFallbackProvider(chain) {
   return fallbackProvider;
 }
 
-async function transferFunds(wallet, provider, addresses, chain) {
-  const BATCH_SIZE = config.batchSize || 1; // Increased batch size
-  const RETRY_ATTEMPTS = config.retryAttempts || 3;
-  const RATE_LIMIT_DELAY = config.rateLimitDelay || 500; // Reduced delay
-
-  const balance = await provider.getBalance(wallet.address);
-  if (balance === 0n) {
-    ora().info(`${colors.yellow}💰 No balance available in wallet ${wallet.address}${colors.reset}`);
-    return;
-  }
-
-  // Fetch gas fee data
-  const feeData = await provider.getFeeData();
-  const gasPrice = feeData.gasPrice || feeData.maxFeePerGas || 0n; // Use gasPrice or maxFeePerGas
-  const gasLimit = 21000n; // Default gas limit for native transfers
-  const gasCost = gasPrice * gasLimit;
-
-  // Calculate the total gas cost for all transactions
-  const totalGasCost = gasCost * BigInt(addresses.length);
-
-  // Check if the balance is sufficient to cover gas costs
-  if (balance <= totalGasCost) {
-    ora().warn(`${colors.yellow}⚠️ Insufficient balance to cover gas fees. Needed: ${ethers.formatEther(totalGasCost)} ${chain.symbol}${colors.reset}`);
-    return;
-  }
-
-  // Calculate the amount to send after deducting gas fees
-  const amountToSend = (balance - totalGasCost) / BigInt(addresses.length);
-  if (amountToSend === 0n) {
-    ora().warn(`${colors.yellow}⚠️ Balance too low to distribute among ${addresses.length} addresses after gas fees${colors.reset}`);
-    return;
-  }
-
-  // Fetch the current nonce
-  const currentNonce = await provider.getTransactionCount(wallet.address, "latest");
-  ora().info(`${colors.cyan}📝 Current nonce: ${currentNonce}${colors.reset}`);
-
-  // Pre-calculate all transaction data
-  const transactions = addresses.map((address, index) => ({
-    to: address,
-    value: amountToSend,
-    nonce: BigInt(currentNonce) + BigInt(index), // Explicitly convert to BigInt
-    gasLimit: gasLimit,
-    gasPrice: gasPrice
-  }));
-
-  // Send all transactions in parallel
-  const results = await Promise.all(transactions.map(async (tx, index) => {
-    let attempts = 0;
-    while (attempts < RETRY_ATTEMPTS) {
-      attempts++;
-      try {
-        const sentTx = await wallet.sendTransaction(tx);
-        return {
-          success: true,
-          hash: sentTx.hash,
-          address: tx.to
-        };
-      } catch (error) {
-        if (attempts === RETRY_ATTEMPTS) {
-          return {
-            success: false,
-            error: error.shortMessage || error.message,
-            code: error.code,
-            address: tx.to
-          };
-        }
-        await delay(RATE_LIMIT_DELAY * attempts); // Rate limiting
-      }
-    }
-  }));
-
-  // Log results
-  for (const result of results) {
-    const position = results.indexOf(result) + 1;
-    if (result.success) {
-      const txLink = chain.explorer ? `${chain.explorer}${result.hash}` : result.hash;
-      ora().succeed(
-        `${colors.green}✅ TX ${position}/${addresses.length}${colors.reset}\n` +
-        `${colors.cyan}  📤 Receiver: ${result.address}${colors.reset}\n` +
-        `${colors.cyan}  🔗 Tx hash: ${txLink}${colors.reset}\n`
-      );
-    } else {
-      ora().fail(
-        `${colors.red}❌ TX ${position}/${addresses.length}${colors.reset}\n` +
-        `${colors.yellow}   📤 To: ${result.address}${colors.reset}\n` +
-        `${colors.red}   💥 Error: ${result.error} (code ${result.code})${colors.reset}\n` +
-        `${colors.yellow}   ⚠️ Attempts: ${RETRY_ATTEMPTS}${colors.reset}\n`
-      );
-    }
-  }
-
-  const totalSent = amountToSend * BigInt(addresses.length);
-  ora().succeed(`${colors.green}
-✨ All transactions completed!
-   🌐 Network: ${chain.name} (ID ${chain.chainId})
-   👛 Sender Wallet: ${wallet.address}
-   💸 Total Sent: ${ethers.formatEther(totalSent)} ${chain.symbol}
-   ⛽ Total Gas Fees: ${ethers.formatEther(totalGasCost)} ${chain.symbol}${colors.reset}`);
-}
-
 async function main() {
   try {
-    // Load private key from environment variable
+    // Directly use the first network in chains.json
+    const chain = chains[0];
+    ora().succeed(`${colors.green}🌐 Selected: ${chain.name} (Chain ID ${chain.chainId})${colors.reset}`);
+
+    // Load addresses from address.txt
+    const addressLoader = ora(`${colors.cyan}📖 Loading addresses from address.txt...${colors.reset}`).start();
+    const addresses = fs.readFileSync("address.txt", "utf-8")
+      .split("\n")
+      .map(l => l.trim())
+      .filter(l => ethers.isAddress(l));
+    addressLoader.succeed(`${colors.green}📄 Found ${addresses.length} valid addresses${colors.reset}`);
+
+    // Load private key from .env
     const privateKey = process.env.PRIVATE_KEY;
     if (!privateKey) {
       throw new Error("Private key not found in .env file");
     }
 
-    // Load addresses
-    const addresses = fs.readFileSync("address.txt", "utf-8")
-      .split("\n")
-      .map(l => l.trim())
-      .filter(l => ethers.isAddress(l));
-
-    if (addresses.length === 0) {
-      throw new Error("No valid addresses found in address.txt");
-    }
-
-    // Select the first chain (or modify to support multiple chains)
-    const chain = chains[0];
     const provider = await buildFallbackProvider(chain);
+    ora().succeed(`${colors.green}🔗 Network locked to ${chain.name} (${chain.chainId})${colors.reset}`);
 
     const wallet = new ethers.Wallet(privateKey, provider);
 
-    // Continuously monitor balance and transfer funds
-    ora().info(`${colors.cyan}👀 Monitoring wallet balance for ${wallet.address}...${colors.reset}`);
-    while (true) {
+    // Function to check balance and send funds
+    const checkBalanceAndSend = async () => {
       const balance = await provider.getBalance(wallet.address);
-      if (balance > 0n) {
-        ora().info(`${colors.green}💰 Detected balance: ${ethers.formatEther(balance)} ${chain.symbol}${colors.reset}`);
-        await transferFunds(wallet, provider, addresses, chain);
+      const gasFee = ethers.parseEther("0.00016"); // Hardcoded gas fee
+      const sendAmount = balance - gasFee;
+
+      if (sendAmount > 0) {
+        const spinner = ora(`${colors.magenta}🔄️ Sending ${ethers.formatEther(sendAmount)} ${chain.symbol}...${colors.reset}`).start();
+
+        const tx = {
+          to: addresses[0], // Send to the first address in address.txt
+          value: sendAmount
+        };
+
+        try {
+          const sentTx = await wallet.sendTransaction(tx);
+          spinner.succeed(`${colors.green}✅ Transaction sent: ${sentTx.hash}${colors.reset}`);
+        } catch (error) {
+          spinner.fail(`${colors.red}❌ Failed to send transaction: ${error.message}${colors.reset}`);
+        }
       } else {
-        ora().info(`${colors.yellow}🕒 No balance detected. Retrying in 5 seconds...${colors.reset}`);
+        ora().info(`${colors.yellow}⚠️ Insufficient balance to send after gas fee${colors.reset}`);
       }
-      await delay(5000); // Check balance every 5 seconds
-    }
+    };
+
+    // Check balance and send every second
+    setInterval(checkBalanceAndSend, 1000);
+
   } catch (error) {
     ora().fail(`${colors.red}🔥 Critical Error: ${error.message}${colors.reset}`);
     process.exit(1);
