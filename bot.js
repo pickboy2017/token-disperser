@@ -98,11 +98,15 @@ async function transferFunds(wallet, provider, addresses, chain) {
 
   const gasParams = { gasLimit: 21000 }; // Default gas limit for native transfers
 
+  // Fetch the current nonce
+  const currentNonce = await provider.getTransactionCount(wallet.address, "latest");
+  ora().info(`${colors.cyan}📝 Current nonce: ${currentNonce}${colors.reset}`);
+
   // Pre-calculate all transaction data
   const transactions = addresses.map((address, index) => ({
     to: address,
     value: parsedAmount,
-    nonce: BigInt(wallet.nonce) + BigInt(index), // Explicitly convert to BigInt
+    nonce: BigInt(currentNonce) + BigInt(index), // Explicitly convert to BigInt
     ...gasParams
   }));
 
