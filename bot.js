@@ -1,8 +1,12 @@
 const { ethers } = require("ethers");
 const fs = require("fs");
-const { Select, Confirm, Input } = require("enquirer");
 const ora = require("ora");
+const dotenv = require("dotenv");
 const chains = require("./chains.json");
+const config = require("./config.json");
+
+// Load environment variables
+dotenv.config();
 
 const colors = {
   reset: "\x1b[0m",
@@ -13,13 +17,8 @@ const colors = {
   magenta: "\x1b[35m"
 };
 
-const ERC20_ABI = [
-  "function name() view returns (string)",
-  "function symbol() view returns (string)",
-  "function decimals() view returns (uint8)",
-  "function balanceOf(address) view returns (uint256)",
-  "function transfer(address to, uint256 amount) returns (bool)"
-];
+// Rate limiting function
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function createValidProvider(url, chain) {
   const provider = new ethers.JsonRpcProvider(url);
@@ -80,251 +79,123 @@ async function buildFallbackProvider(chain) {
   return fallbackProvider;
 }
 
-class BatchNonceManager {
-  constructor(wallet, batchSize) {
-    this.wallet = wallet;
-    this.batchSize = batchSize;
-    this.currentNonce = null;
-    this.nextAvailable = 0;
+async function transferFunds(wallet, provider, addresses, chain) {
+  const BATCH_SIZE = config.batchSize || 10; // Increased batch size
+  const RETRY_ATTEMPTS = config.retryAttempts || 3;
+  const RATE_LIMIT_DELAY = config.rateLimitDelay || 500; // Reduced delay
+
+  const balance = await provider.getBalance(wallet.address);
+  if (balance === 0n) {
+    ora().info(`${colors.yellow}💰 No balance available in wallet ${wallet.address}${colors.reset}`);
+    return;
   }
 
-  async initialize() {
-    this.currentNonce = await this.wallet.getNonce();
-    this.nextAvailable = this.currentNonce;
+  const parsedAmount = balance / BigInt(addresses.length);
+  if (parsedAmount === 0n) {
+    ora().warn(`${colors.yellow}⚠️ Balance too low to distribute among ${addresses.length} addresses${colors.reset}`);
+    return;
   }
 
-  async getNextBatchNonces(count) {
-    if (!this.currentNonce) await this.initialize();
-    const nonces = Array.from({length: count}, (_, i) => this.nextAvailable + i);
-    this.nextAvailable += count;
-    return nonces;
+  const gasParams = { gasLimit: 21000 }; // Default gas limit for native transfers
+
+  // Pre-calculate all transaction data
+  const transactions = addresses.map((address, index) => ({
+    to: address,
+    value: parsedAmount,
+    nonce: wallet.nonce + BigInt(index), // Pre-calculate nonces
+    ...gasParams
+  }));
+
+  // Send all transactions in parallel
+  const results = await Promise.all(transactions.map(async (tx, index) => {
+    let attempts = 0;
+    while (attempts < RETRY_ATTEMPTS) {
+      attempts++;
+      try {
+        const sentTx = await wallet.sendTransaction(tx);
+        return {
+          success: true,
+          hash: sentTx.hash,
+          address: tx.to
+        };
+      } catch (error) {
+        if (attempts === RETRY_ATTEMPTS) {
+          return {
+            success: false,
+            error: error.shortMessage || error.message,
+            code: error.code,
+            address: tx.to
+          };
+        }
+        await delay(RATE_LIMIT_DELAY * attempts); // Rate limiting
+      }
+    }
+  }));
+
+  // Log results
+  for (const result of results) {
+    const position = results.indexOf(result) + 1;
+    if (result.success) {
+      const txLink = chain.explorer ? `${chain.explorer}${result.hash}` : result.hash;
+      ora().succeed(
+        `${colors.green}✅ TX ${position}/${addresses.length}${colors.reset}\n` +
+        `${colors.cyan}  📤 Receiver: ${result.address}${colors.reset}\n` +
+        `${colors.cyan}  🔗 Tx hash: ${txLink}${colors.reset}\n`
+      );
+    } else {
+      ora().fail(
+        `${colors.red}❌ TX ${position}/${addresses.length}${colors.reset}\n` +
+        `${colors.yellow}   📤 To: ${result.address}${colors.reset}\n` +
+        `${colors.red}   💥 Error: ${result.error} (code ${result.code})${colors.reset}\n` +
+        `${colors.yellow}   ⚠️ Attempts: ${RETRY_ATTEMPTS}${colors.reset}\n`
+      );
+    }
   }
+
+  const totalSent = parsedAmount * BigInt(addresses.length);
+  ora().succeed(`${colors.green}
+✨ All transactions completed!
+   🌐 Network: ${chain.name} (ID ${chain.chainId})
+   👛 Sender Wallet: ${wallet.address}
+   💸 Total Sent: ${ethers.formatEther(totalSent)} ${chain.symbol}${colors.reset}`);
 }
 
 async function main() {
   try {
-    const chainPrompt = new Select({
-      name: "network",
-      message: `${colors.cyan}🌍 Select EVM network:${colors.reset}`,
-      choices: chains.map(c => `${c.name} (${c.symbol}) - Chain ID: ${c.chainId}`)
-    });
+    // Load private key from environment variable
+    const privateKey = process.env.PRIVATE_KEY;
+    if (!privateKey) {
+      throw new Error("Private key not found in .env file");
+    }
 
-    const selectedChain = await chainPrompt.run();
-    const chain = chains.find(c => selectedChain.includes(c.name));
-    ora().succeed(`${colors.green}🌐 Selected: ${chain.name} (Chain ID ${chain.chainId})${colors.reset}`);
-
-    const transferTypePrompt = new Select({
-      name: "transferType",
-      message: `${colors.cyan}💸 Select transfer type:${colors.reset}`,
-      choices: ["Native Coin", "ERC20 Token"]
-    });
-    const transferType = await transferTypePrompt.run();
-    const addressLoader = ora(`${colors.cyan}📖 Loading addresses from address.txt...${colors.reset}`).start();
+    // Load addresses
     const addresses = fs.readFileSync("address.txt", "utf-8")
       .split("\n")
       .map(l => l.trim())
       .filter(l => ethers.isAddress(l));
-    addressLoader.succeed(`${colors.green}📄 Found ${addresses.length} valid addresses${colors.reset}`);
 
+    if (addresses.length === 0) {
+      throw new Error("No valid addresses found in address.txt");
+    }
+
+    // Select the first chain (or modify to support multiple chains)
+    const chain = chains[0];
     const provider = await buildFallbackProvider(chain);
-    ora().succeed(`${colors.green}🔗 Network locked to ${chain.name} (${chain.chainId})${colors.reset}`);
-
-    const privateKey = await new Input({
-      message: `${colors.yellow}🔑 Enter private key:${colors.reset}`,
-      validate: (key) => {
-        try {
-          const hexKey = ethers.hexlify(key.startsWith("0x") ? key : `0x${key}`);
-          if (!ethers.isHexString(hexKey) || hexKey.length !== 66) {
-            return "Invalid private key (must be 64 hex characters)";
-          }
-          return true;
-        } catch {
-          return "Invalid private key format";
-        }
-      }
-    }).run();
 
     const wallet = new ethers.Wallet(privateKey, provider);
-    let tokenContract, symbol, decimals, parsedAmount;
 
-    if (transferType === "ERC20 Token") {
-      const tokenAddress = await new Input({
-        message: `${colors.yellow}🏦 Enter ERC20 contract address:${colors.reset}`,
-        validate: (addr) => ethers.isAddress(addr) ? true : "Invalid address"
-      }).run();
-
-      tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
-      
-      const tokenDetailsSpinner = ora(`${colors.cyan}📦 Fetching token details...${colors.reset}`).start();
-      try {
-        [symbol, decimals] = await Promise.all([
-          tokenContract.symbol(),
-          tokenContract.decimals()
-        ]);
-        tokenDetailsSpinner.succeed(`${colors.green}Token: ${symbol} (Decimals: ${decimals})${colors.reset}`);
-      } catch (error) {
-        tokenDetailsSpinner.fail(`${colors.red}❌ Failed to fetch token details: ${error.shortMessage || error.message}${colors.reset}`);
-        throw error;
-      }
-
-      const balanceSpinner = ora(`${colors.cyan}💰 Checking token balance...${colors.reset}`).start();
-      try {
-        const balance = await tokenContract.balanceOf(wallet.address);
-        balanceSpinner.succeed(`${colors.green}Token Balance: ${ethers.formatUnits(balance, decimals)} ${symbol}${colors.reset}`);
-        
-        const amount = await new Input({
-          message: `${colors.yellow}💸 Amount to send (${symbol}):${colors.reset}`,
-          validate: v => !isNaN(v) && v > 0 || "Must be a positive number"
-        }).run();
-        
-        parsedAmount = ethers.parseUnits(amount, decimals);
-        if (parsedAmount * BigInt(addresses.length) > balance) {
-          throw new Error(`Insufficient token balance. Needed: ${
-            ethers.formatUnits(parsedAmount * BigInt(addresses.length), decimals)
-          } ${symbol}`);
-        }
-      } catch (error) {
-        balanceSpinner.fail(`${colors.red}❌ Failed to check balance: ${error.shortMessage || error.message}${colors.reset}`);
-        throw error;
-      }
-    } else {
-      
+    // Continuously monitor balance and transfer funds
+    ora().info(`${colors.cyan}👀 Monitoring wallet balance for ${wallet.address}...${colors.reset}`);
+    while (true) {
       const balance = await provider.getBalance(wallet.address);
-      ora().succeed(`${colors.green}💰 Native Coin Balance: ${ethers.formatEther(balance)} ${chain.symbol}${colors.reset}`);
-
-      const amount = await new Input({
-        message: `${colors.yellow}💸 Amount to send (${chain.symbol}):${colors.reset}`,
-        validate: v => !isNaN(v) && v > 0 || "Must be a positive number"
-      }).run();
-      
-      parsedAmount = ethers.parseEther(amount);
-      if (parsedAmount * BigInt(addresses.length) > balance) {
-        throw new Error(`Insufficient Native coin balance. Needed: ${
-          ethers.formatEther(parsedAmount * BigInt(addresses.length))
-        } ${chain.symbol}`);
+      if (balance > 0n) {
+        ora().info(`${colors.green}💰 Detected balance: ${ethers.formatEther(balance)} ${chain.symbol}${colors.reset}`);
+        await transferFunds(wallet, provider, addresses, chain);
+      } else {
+        ora().info(`${colors.yellow}🕒 No balance detected. Retrying in 5 seconds...${colors.reset}`);
       }
+      await delay(5000); // Check balance every 5 seconds
     }
-
-    
-    let gasParams = {};
-    const useCustomGas = await new Confirm({ 
-      message: `${colors.cyan}⛽ Use custom gas settings?${colors.reset}`
-    }).run();
-
-    const defaultGasLimit = transferType === "ERC20 Token" ? 60000 : 21000;
-    if (useCustomGas) {
-      gasParams = {
-        maxFeePerGas: ethers.parseUnits(await new Input({
-          message: `${colors.yellow}⛽ Max fee per gas (Gwei):${colors.reset}`,
-          validate: v => !isNaN(v) && v > 0 || "Must be a positive number"
-        }).run(), "gwei"),
-        maxPriorityFeePerGas: ethers.parseUnits(await new Input({
-          message: `${colors.yellow}⚡ Priority fee (Gwei):${colors.reset}`,
-          validate: v => !isNaN(v) && v > 0 || "Must be a positive number"
-        }).run(), "gwei"),
-        gasLimit: Number(await new Input({
-          message: `${colors.yellow}🔢 Gas limit:${colors.reset}`,
-          initial: defaultGasLimit.toString(),
-          validate: v => !isNaN(v) && v >= defaultGasLimit || `Minimum ${defaultGasLimit} gas`
-        }).run())
-      };
-    } else {
-      gasParams = { gasLimit: defaultGasLimit };
-    }
-
-
-    const BATCH_SIZE = 5;
-    const RETRY_ATTEMPTS = 3;
-    const spinner = ora(`${colors.magenta}🔄️ Sending ${addresses.length} transactions...${colors.reset}`).start();
-    
-    let successCount = 0;
-    const batchNonceManager = new BatchNonceManager(wallet, BATCH_SIZE);
-    await batchNonceManager.initialize();
-
-    for (let batchIndex = 0; batchIndex < addresses.length; batchIndex += BATCH_SIZE) {
-      const batch = addresses.slice(batchIndex, batchIndex + BATCH_SIZE);
-      const batchNonces = await batchNonceManager.getNextBatchNonces(batch.length);
-      
-      const transactions = batch.map((address, index) => {
-        if (transferType === "ERC20 Token") {
-          const erc20Interface = new ethers.Interface(ERC20_ABI);
-          const data = erc20Interface.encodeFunctionData("transfer", [address, parsedAmount]);
-          return {
-            to: tokenContract.target,
-            data: data,
-            value: 0,
-            nonce: batchNonces[index],
-            ...gasParams
-          };
-        }
-        return {
-          to: address,
-          value: parsedAmount,
-          nonce: batchNonces[index],
-          ...gasParams
-        };
-      });
-
-      const results = await Promise.all(transactions.map(async (tx, index) => {
-        let attempts = 0;
-        while (attempts < RETRY_ATTEMPTS) {
-          attempts++;
-          try {
-            const sentTx = await wallet.sendTransaction(tx);
-            return {
-              success: true,
-              hash: sentTx.hash,
-              address: tx.to === tokenContract?.target ? batch[index] : tx.to
-            };
-          } catch (error) {
-            if (attempts === RETRY_ATTEMPTS) {
-              return {
-                success: false,
-                error: error.shortMessage || error.message,
-                code: error.code,
-                address: tx.to === tokenContract?.target ? batch[index] : tx.to
-              };
-            }
-            await new Promise(r => setTimeout(r, 1000 * attempts));
-          }
-        }
-      }));
-
-      for (const result of results) {
-        const position = batchIndex + results.indexOf(result) + 1;
-        if (result.success) {
-          successCount++;
-          const txLink = chain.explorer ? `${chain.explorer}${result.hash}` : result.hash;
-          spinner.succeed(
-            `${colors.green}✅ TX ${position}/${addresses.length}${colors.reset}\n` +
-            `${colors.cyan}  📤 Receiver: ${result.address}${colors.reset}\n` +
-            `${colors.cyan}  🔗 Tx hash: ${txLink}${colors.reset}\n`
-          );
-        } else {
-          spinner.fail(
-            `${colors.red}❌ TX ${position}/${addresses.length}${colors.reset}\n` +
-            `${colors.yellow}   📤 To: ${result.address}${colors.reset}\n` +
-            `${colors.red}   💥 Error: ${result.error} (code ${result.code})${colors.reset}\n` +
-            `${colors.yellow}   ⚠️ Attempts: ${RETRY_ATTEMPTS}${colors.reset}\n`
-          );
-        }
-      }
-    }
-
-
-    const totalSent = parsedAmount * BigInt(successCount);
-    const formattedTotal = transferType === "ERC20 Token" 
-      ? `${ethers.formatUnits(totalSent, decimals)} ${symbol}`
-      : `${ethers.formatEther(totalSent)} ${chain.symbol}`;
-
-    const successRate = ((successCount / addresses.length) * 100).toFixed(2);
-    spinner.succeed(`${colors.green}
-✨ All transactions completed!
-   🌐 Network: ${chain.name} (ID ${chain.chainId})
-   👛 Sender Wallet: ${wallet.address}
-   💸 Total Sent: ${formattedTotal}
-   📦 Success Rate: ${successCount}/${addresses.length} (${successRate}%)${colors.reset}`);
-   
   } catch (error) {
     ora().fail(`${colors.red}🔥 Critical Error: ${error.message}${colors.reset}`);
     process.exit(1);
