@@ -86,13 +86,13 @@ async function transferFunds(wallet, provider, addresses, chain) {
 
   const balance = await provider.getBalance(wallet.address);
   if (balance === 0n) {
-    ora().info(`${colors.yellow}💰 No balance available in wallet ${wallet.address}${colors.reset}`);
+    console.log(`${colors.yellow}💰 No balance available in wallet ${wallet.address}${colors.reset}`);
     return;
   }
 
   const parsedAmount = balance / BigInt(addresses.length);
   if (parsedAmount === 0n) {
-    ora().warn(`${colors.yellow}⚠️ Balance too low to distribute among ${addresses.length} addresses${colors.reset}`);
+    console.log(`${colors.yellow}⚠️ Balance too low to distribute among ${addresses.length} addresses${colors.reset}`);
     return;
   }
 
@@ -137,13 +137,13 @@ async function transferFunds(wallet, provider, addresses, chain) {
     const position = results.indexOf(result) + 1;
     if (result.success) {
       const txLink = chain.explorer ? `${chain.explorer}${result.hash}` : result.hash;
-      ora().succeed(
+      console.log(
         `${colors.green}✅ TX ${position}/${addresses.length}${colors.reset}\n` +
         `${colors.cyan}  📤 Receiver: ${result.address}${colors.reset}\n` +
         `${colors.cyan}  🔗 Tx hash: ${txLink}${colors.reset}\n`
       );
     } else {
-      ora().fail(
+      console.log(
         `${colors.red}❌ TX ${position}/${addresses.length}${colors.reset}\n` +
         `${colors.yellow}   📤 To: ${result.address}${colors.reset}\n` +
         `${colors.red}   💥 Error: ${result.error} (code ${result.code})${colors.reset}\n` +
@@ -153,7 +153,7 @@ async function transferFunds(wallet, provider, addresses, chain) {
   }
 
   const totalSent = parsedAmount * BigInt(addresses.length);
-  ora().succeed(`${colors.green}
+  console.log(`${colors.green}
 ✨ All transactions completed!
    🌐 Network: ${chain.name} (ID ${chain.chainId})
    👛 Sender Wallet: ${wallet.address}
@@ -185,19 +185,19 @@ async function main() {
     const wallet = new ethers.Wallet(privateKey, provider);
 
     // Continuously monitor balance and transfer funds
-    ora().info(`${colors.cyan}👀 Monitoring wallet balance for ${wallet.address}...${colors.reset}`);
+    console.log(`${colors.cyan}👀 Monitoring wallet balance for ${wallet.address}...${colors.reset}`);
     while (true) {
       const balance = await provider.getBalance(wallet.address);
       if (balance > 0n) {
-        ora().info(`${colors.green}💰 Detected balance: ${ethers.formatEther(balance)} ${chain.symbol}${colors.reset}`);
+        console.log(`${colors.green}💰 Detected balance: ${ethers.formatEther(balance)} ${chain.symbol}${colors.reset}`);
         await transferFunds(wallet, provider, addresses, chain);
       } else {
-        ora().info(`${colors.yellow}🕒 No balance detected. Retrying in 5 seconds...${colors.reset}`);
+        console.log(`${colors.yellow}🕒 No balance detected. Retrying in 5 seconds...${colors.reset}`);
       }
       await delay(5000); // Check balance every 5 seconds
     }
   } catch (error) {
-    ora().fail(`${colors.red}🔥 Critical Error: ${error.message}${colors.reset}`);
+    console.error(`${colors.red}🔥 Critical Error: ${error.message}${colors.reset}`);
     process.exit(1);
   }
 }
