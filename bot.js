@@ -90,8 +90,9 @@ async function transferFunds(wallet, provider, addresses, chain) {
     return;
   }
 
-  // Estimate gas cost for one transaction
-  const gasPrice = await provider.getGasPrice();
+  // Fetch gas fee data
+  const feeData = await provider.getFeeData();
+  const gasPrice = feeData.gasPrice || feeData.maxFeePerGas || 0n; // Use gasPrice or maxFeePerGas
   const gasLimit = 21000n; // Default gas limit for native transfers
   const gasCost = gasPrice * gasLimit;
 
