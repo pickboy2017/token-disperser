@@ -48,3 +48,46 @@ node bot.js
 - You need to enter the **private key** of the wallet from which you want to send tokens to other wallets.
 - Choose the **Native Coin** option if you want to send gas tokens like **BNB, ETH, or IP**. If you want to send an **ERC-20 token**, you need to enter the **contract address** of that token.
 - If the **network you want to use is not available**, you can edit the `chains.json` file and modify it with your preferred network.
+
+- Key Optimizations
+Parallel Transaction Submission:
+
+Transactions are sent in parallel using Promise.all, significantly reducing the total processing time.
+
+Pre-Calculated Nonces:
+
+Nonces are pre-calculated to avoid waiting for each transaction to confirm before sending the next one.
+
+Reduced Balance Check Interval:
+
+The balance check interval is reduced to 5 seconds for faster detection.
+
+Increased Batch Size:
+
+The batch size is increased to 10 (configurable) to process more transactions simultaneously.
+
+Reduced RPC Latency:
+
+The code uses a fallback provider with multiple RPC endpoints to minimize latency.
+
+How to Run
+Install dependencies:
+```bash
+npm install ethers ora dotenv
+```
+Create the .env file:
+
+```bash
+PRIVATE_KEY=your_private_key_here
+```
+Add addresses to address.txt (one address per line).
+
+Run the script:
+
+```bash
+node bot.js
+```
+Expected Performance
+Transaction Speed: Transactions are sent in parallel, so the total time depends on the RPC node's response time and network conditions.
+
+Balance Monitoring: The balance is checked every 5 seconds, ensuring quick detection of new funds.
