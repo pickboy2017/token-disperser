@@ -1,0 +1,5 @@
+{
+  "batchSize": 5,
+  "retryAttempts": 3,
+  "rateLimitDelay": 1000
+}
