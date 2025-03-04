@@ -80,7 +80,7 @@ async function buildFallbackProvider(chain) {
 }
 
 async function transferFunds(wallet, provider, addresses, chain) {
-  const BATCH_SIZE = config.batchSize || 10; // Increased batch size
+  const BATCH_SIZE = config.batchSize || 1; // Increased batch size
   const RETRY_ATTEMPTS = config.retryAttempts || 3;
   const RATE_LIMIT_DELAY = config.rateLimitDelay || 500; // Reduced delay
 
