@@ -1,6 +1,6 @@
 const { ethers } = require("ethers");
 const fs = require("fs");
-const { default: ora } = require("ora"); // Properly import ora
+const { default: ora } = require("ora");
 const dotenv = require("dotenv");
 const chains = require("./chains.json");
 const config = require("./config.json");
@@ -102,7 +102,7 @@ async function transferFunds(wallet, provider, addresses, chain) {
   const transactions = addresses.map((address, index) => ({
     to: address,
     value: parsedAmount,
-    nonce: wallet.nonce + BigInt(index), // Pre-calculate nonces
+    nonce: BigInt(wallet.nonce) + BigInt(index), // Explicitly convert to BigInt
     ...gasParams
   }));
 
