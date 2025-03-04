@@ -1,6 +1,6 @@
 const { ethers } = require("ethers");
 const fs = require("fs");
-const ora = require("ora");
+const { default: ora } = require("ora");
 const chains = require("./chains.json");
 require('dotenv').config(); // Load environment variables from .env file
 
